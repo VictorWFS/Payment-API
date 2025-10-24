@@ -8,7 +8,10 @@ import (
 	"net/http" //pacote principal para criar servidores/clientes http
 	"os"
 
-	//O driver do postgres SQL.
+	"strconv" //import para converter o ID da urrl
+	"strings" //impoort para ler o ID da url
+
+	//O driver do postgreSQL.
 	_ "github.com/jackc/pgx/v4/stdlib"
 )
 
@@ -28,6 +31,12 @@ type PagamentoRequest struct {
 // como resposta após a criação do pagamento
 type PagamentoResponse struct {
 	TransacaoId int64 `json: "transacao_id"`
+}
+
+type PagamentoCompleto struct {
+	Id    int64   `json: "id"`
+	Chave string  `json: "chave"`
+	Valor float64 `json: "valor"`
 }
 
 // initDB inicializa a conexão com postgresSql e cria a tabela caso não exista
@@ -70,6 +79,17 @@ func salvarPagamento(chave string, valor float64) (int64, error) {
 	return id, nil
 }
 
+// consulta no banco e retorna um pagamento por ID
+func buscarPagamentoPorId(id int64) (PagamentoCompleto, error) {
+	var p PagamentoCompleto
+	query := "SELECT id, chave, valor FROM pagamentos WHERE id = $1"
+
+	//Aqui estamos buscando uma única linha referente ao id que queremos
+	err := db.QueryRow(query, id).Scan(&p.Id, &p.Chave, &p.Valor)
+
+	return p, err
+}
+
 // função homeHandler que comunica ao GO como responder a uma requisição
 // em uma rota específica
 // w é o objeto que usamos para enviar de volta a resposta para requisição do cliente
@@ -79,7 +99,7 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // manipulador para lidar com a rota /pagamentos
-func pagamentosHandler(w http.ResponseWriter, r *http.Request) {
+func pagamentosPostHandler(w http.ResponseWriter, r *http.Request) {
 	//validar o método da requisição, queremos POST
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
@@ -116,6 +136,43 @@ func pagamentosHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func pagamentosGetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	//capturar o Id da URL
+	idString := strings.TrimPrefix(r.URL.Path, "/pagamentos/")
+	if idString == "" {
+		http.Error(w, "Id do pagamento é obrigatório", http.StatusBadRequest)
+		return
+	}
+
+	//converter o id de string para int64
+	id, err := strconv.ParseInt(idString, 10, 64)
+	if err != nil {
+		http.Error(w, "Id inválido: deve ser um numero", http.StatusBadRequest)
+		return
+	}
+
+	//consultar no banco
+	pagamento, err := buscarPagamentoPorId(id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Pagamento não encontrado", http.StatusNotFound)
+		} else {
+			http.Error(w, "Erro ao buscar pagamento: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	//Enviando a resposta em Json
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK) // 200 ok
+	json.NewEncoder(w).Encode(pagamento)
+}
+
 func main() {
 	//conectando ao banco de dados
 	connStr := "postgres://postgres:1234@localhost:5432/pagamentos?sslmode=disable"
@@ -132,7 +189,8 @@ func main() {
 	//http.HandleFunc comunica ao GO que quando chegar uma requisição para URL '/'
 	//deve-se utilizar a função homeHandler para responder.
 	http.HandleFunc("/", homeHandler)
-	http.HandleFunc("/pagamentos", pagamentosHandler)
+	http.HandleFunc("/pagamentos", pagamentosPostHandler)
+	http.HandleFunc("/pagamentos/", pagamentosGetHandler)
 
 	porta := ":8080"
 	fmt.Printf("Servidor escutando na porta %s\n", porta)
